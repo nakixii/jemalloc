@@ -263,7 +263,6 @@ if test "x$GCC" = "xyes" ; then
   JE_CFLAGS_ADD([-Wno-missing-field-initializers])
   JE_CFLAGS_ADD([-Wno-missing-attributes])
   JE_CFLAGS_ADD([-pipe])
-  JE_CFLAGS_ADD([-g3])
 elif test "x$je_cv_msvc" = "xyes" ; then
   CC="$CC -nologo"
   JE_CFLAGS_ADD([-Zi])
@@ -309,10 +308,9 @@ if test "x$enable_cxx" = "x1" ; then
   if test "x${HAVE_CXX14}" = "x1" -o "x${HAVE_CXX17}" = "x1"; then
     JE_CXXFLAGS_ADD([-Wall])
     JE_CXXFLAGS_ADD([-Wextra])
-    JE_CXXFLAGS_ADD([-g3])
+    JE_CXXFLAGS_ADD([-Wno-missing-braces])
 
     SAVED_LIBS="${LIBS}"
-    JE_APPEND_VS(LIBS, -lstdc++)
     JE_COMPILABLE([libstdc++ linkage], [
 #include <stdlib.h>
 ], [[
@@ -649,7 +647,6 @@ case "${host}" in
 	LD_PRELOAD_VAR="DYLD_INSERT_LIBRARIES"
 	so="dylib"
 	importlib="${so}"
-	force_tls="0"
 	DSO_LDFLAGS='-shared -Wl,-install_name,$(LIBDIR)/$(@F)'
 	SOREV="${rev}.${so}"
 	sbrk_deprecated="1"
@@ -666,7 +663,6 @@ case "${host}" in
 	;;
   *-*-openbsd*)
 	abi="elf"
-	force_tls="0"
 	;;
   *-*-bitrig*)
 	abi="elf"
@@ -681,7 +677,6 @@ case "${host}" in
 	AC_DEFINE([JEMALLOC_PROC_SYS_VM_OVERCOMMIT_MEMORY], [ ], [ ])
 	AC_DEFINE([JEMALLOC_THREADED_INIT], [ ], [ ])
 	AC_DEFINE([JEMALLOC_C11_ATOMICS], [ ], [ ])
-	force_tls="0"
 	if test "${LG_SIZEOF_PTR}" = "3"; then
 	  default_retain="1"
 	fi
@@ -743,7 +738,6 @@ case "${host}" in
 	;;
   *-*-mingw* | *-*-cygwin*)
 	abi="pecoff"
-	force_tls="0"
 	maps_coalesce="0"
 	RPATH=""
 	so="dll"
@@ -780,7 +774,6 @@ case "${host}" in
 	;;
   *-*-nto-qnx)
 	abi="elf"
-  force_tls="0"
   AC_DEFINE([JEMALLOC_HAS_ALLOCA_H], [ ], [ ])
 	;;
   *)
@@ -848,18 +841,6 @@ if test "x${je_cv_attribute}" = "xyes" ; then
     JE_CXXFLAGS_ADD([-fvisibility=hidden])
   fi
 fi
-dnl Check for tls_model attribute support (clang 3.0 still lacks support).
-JE_CFLAGS_SAVE()
-JE_CFLAGS_ADD([-Werror])
-JE_CFLAGS_ADD([-herror_on_warning])
-JE_COMPILABLE([tls_model attribute], [],
-              [static __thread int
-               __attribute__((tls_model("initial-exec"), unused)) foo;
-               foo = 0;],
-              [je_cv_tls_model])
-JE_CFLAGS_RESTORE()
-dnl (Setting of JEMALLOC_TLS_MODEL is done later, after we've checked for
-dnl --disable-initial-exec-tls)
 
 dnl Check for alloc_size attribute support.
 JE_CFLAGS_SAVE()
@@ -1094,14 +1075,6 @@ if test "x${JEMALLOC_PREFIX}" = "x" ; then
 		 wrap_syms="${wrap_syms} __posix_memalign"])
 fi
 
-case "${host}" in
-  *-*-mingw* | *-*-cygwin*)
-    wrap_syms="${wrap_syms} tls_callback"
-    ;;
-  *)
-    ;;
-esac
-
 dnl Mangle library-private APIs.
 AC_ARG_WITH([private_namespace],
   [AS_HELP_STRING([--with-private-namespace=<prefix>], [Prefix to prepend to all library-private APIs])],
@@ -1227,9 +1200,14 @@ AC_SUBST([enable_debug])
 dnl Only optimize if not debugging.
 if test "x$enable_debug" = "x0" ; then
   if test "x$GCC" = "xyes" ; then
-    JE_CFLAGS_ADD([-O3])
-    JE_CXXFLAGS_ADD([-O3])
-    JE_CFLAGS_ADD([-funroll-loops])
+    JE_CFLAGS_ADD([-Os])
+    JE_CFLAGS_ADD([-flto])
+    JE_CFLAGS_ADD([-fno-asynchronous-unwind-tables])
+    JE_CFLAGS_ADD([-fvisibility=hidden])
+    JE_CXXFLAGS_ADD([-Os])
+    JE_CXXFLAGS_ADD([-flto])
+    JE_CXXFLAGS_ADD([-fno-asynchronous-unwind-tables])
+    JE_CXXFLAGS_ADD([-fvisibility=hidden])
   elif test "x$je_cv_msvc" = "xyes" ; then
     JE_CFLAGS_ADD([-O2])
     JE_CXXFLAGS_ADD([-O2])
@@ -2018,7 +1996,6 @@ AC_CHECK_FUNC([_malloc_thread_cleanup],
 if test "x$have__malloc_thread_cleanup" = "x1" ; then
   AC_DEFINE([JEMALLOC_MALLOC_THREAD_CLEANUP], [ ], [ ])
   wrap_syms="${wrap_syms} _malloc_thread_cleanup _malloc_tsd_cleanup_register"
-  force_tls="1"
 fi
 
 dnl Check whether the BSD-specific _pthread_mutex_init_calloc_cb() exists.  If
@@ -2073,35 +2050,6 @@ if test "x$enable_lazy_lock" = "x1" ; then
   fi
 fi
 AC_SUBST([enable_lazy_lock])
-
-dnl Automatically configure TLS.
-if test "x${force_tls}" = "x1" ; then
-  enable_tls="1"
-elif test "x${force_tls}" = "x0" ; then
-  enable_tls="0"
-else
-  enable_tls="1"
-fi
-if test "x${enable_tls}" = "x1" ; then
-AC_MSG_CHECKING([for TLS])
-AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
-[[
-    __thread int x;
-]], [[
-    x = 42;
-
-    return 0;
-]])],
-              AC_MSG_RESULT([yes]),
-              AC_MSG_RESULT([no])
-              enable_tls="0")
-else
-  enable_tls="0"
-fi
-AC_SUBST([enable_tls])
-if test "x${enable_tls}" = "x1" ; then
-  AC_DEFINE_UNQUOTED([JEMALLOC_TLS], [ ], [ ])
-fi
 
 dnl ============================================================================
 dnl Check for C11 atomics.
@@ -2383,30 +2331,6 @@ if test "x${enable_zone_allocator}" = "x1" ; then
     AC_MSG_ERROR([--enable-zone-allocator is only supported on Darwin])
   fi
   AC_DEFINE([JEMALLOC_ZONE], [ ], [ ])
-fi
-
-dnl ============================================================================
-dnl Use initial-exec TLS by default.
-AC_ARG_ENABLE([initial-exec-tls],
-  [AS_HELP_STRING([--disable-initial-exec-tls],
-                  [Disable the initial-exec tls model])],
-[if test "x$enable_initial_exec_tls" = "xno" ; then
-  enable_initial_exec_tls="0"
-else
-  enable_initial_exec_tls="1"
-fi
-],
-[enable_initial_exec_tls="1"]
-)
-AC_SUBST([enable_initial_exec_tls])
-
-if test "x${je_cv_tls_model}" = "xyes" -a \
-       "x${enable_initial_exec_tls}" = "x1" ; then
-  AC_DEFINE([JEMALLOC_TLS_MODEL],
-            [__attribute__((tls_model("initial-exec")))], 
-            [ ])
-else
-  AC_DEFINE([JEMALLOC_TLS_MODEL], [ ], [ ])
 fi
 
 dnl ============================================================================
