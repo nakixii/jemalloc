@@ -311,6 +311,7 @@ if test "x$enable_cxx" = "x1" ; then
     JE_CXXFLAGS_ADD([-Wno-missing-braces])
 
     SAVED_LIBS="${LIBS}"
+    JE_APPEND_VS(LIBS, -lc++abi)
     JE_COMPILABLE([libstdc++ linkage], [
 #include <stdlib.h>
 ], [[
